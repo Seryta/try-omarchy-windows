@@ -105,6 +105,10 @@
       {
         "file": "patches/qemu/0024-raise-windows-fd-setsize-for-slirp.patch",
         "sha256": "ba94ed3e314c9388aeba6e888747d92e797f1c98c9c546b4ed71a76f10163059"
+      },
+      {
+        "file": "patches/qemu/0025-keep-sdl-playback-running-without-a-windows-device.patch",
+        "sha256": "66a690904ad953df9470da2416e4659f98081c48a3e56fb097463f281f9ee0be"
       }
     ]
   },

@@ -158,7 +158,8 @@ clock. Empty inventories are checked once per second so reconnecting a
 microphone can resume an active stream. Failed opens with listed endpoints wait
 ten seconds after the attempt before retrying, including live route changes.
 Stopped capture devices return to silence on the next get/read, after any
-outstanding buffer has been consumed. Playback retains its existing behavior.
+outstanding buffer has been consumed. Playback keeps its existing startup and
+live-route behavior here; the next candidate closes the matching playback gap.
 
 The build runs `test-sdl-capture.py <patched-qemu-directory>` against the actual
 capture functions with mocked SDL endpoints and deterministic clocks. It covers
@@ -197,3 +198,28 @@ the socket count grew again. The larger sets take about 96 KB of main-loop
 stack, well inside QEMU's 2 MB thread stacks. `test-fd-setsize.py` binds 100
 loopback sockets and checks that `select()` reports the last one ready with the
 pinned size, and misses it with Winsock's default.
+
+`0025-keep-sdl-playback-running-without-a-windows-device.patch` closes the same
+stall for playback that `0022` closes for capture. A Windows session can lose
+every playback endpoint: an RDP session disconnecting removes its redirected
+"Remote Audio" device, and the default can be replaced between polls. Opening a
+missing playback endpoint makes WASAPI retry for about eight seconds inside the
+audio path, which stalls QEMU's main loop; virtio-sound's control messages then
+time out and the guest compositor wedges while the VM keeps running. The patch
+skips Windows playback opens while the inventory is empty, drains the mixing
+engine's emulated output ring at the virtual clock rate while no endpoint exists
+(the direct, non-mixing write path paces the same way), treats a selected
+endpoint that left the inventory as the system default (keeping the selection
+polled so it comes back when listed), releases stopped devices, and retries every
+second without an endpoint or ten seconds after a failed open with listed
+endpoints. Playback resumes on the next route poll when an endpoint returns.
+An endpoint that disappears between SDL's cached enumeration and the open can
+still enter the WASAPI retry once; the ten-second backoff bounds repeats.
+
+The build runs `test-sdl-playback.py <patched-qemu-directory>` against the
+actual playback functions with mocked SDL endpoints and deterministic clocks. It
+covers empty inventories without WASAPI opens, virtual-clock pacing of the
+mixing-engine ring, reconnect and route recovery, stopped-device release,
+failed-open backoff and reacquisition while guest playback is active. Physical
+RDP disconnect and endpoint hotplug behavior remain to verify on a signed-in
+Windows desktop.

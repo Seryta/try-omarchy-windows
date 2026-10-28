@@ -1,0 +1,223 @@
+diff --git a/audio/sdlaudio.c b/audio/sdlaudio.c
+index a4a70e2..0b03aa4 100644
+--- a/audio/sdlaudio.c
++++ b/audio/sdlaudio.c
+@@ -62,6 +62,7 @@ typedef struct SDLVoiceOut {
+     gint64 next_route_check;
+     bool route_matches;
+     bool enabled;
++    RateCtl silence_rate;
+ } SDLVoiceOut;
+ 
+ typedef struct SDLVoiceIn {
+@@ -259,11 +260,12 @@ static SDL_AudioDeviceID sdl_open(SDL_AudioSpec *req, SDL_AudioSpec *obt,
+ {
+     SDL_AudioDeviceID devid;
+ #ifdef _WIN32
+-    /* WASAPI retries E_NOTFOUND for eight seconds. An empty capture
+-     * inventory is normal while a headset is disconnected, not an open error.
+-     * Check again on the next route poll so microphone hotplug keeps working.
++    /* WASAPI retries E_NOTFOUND for eight seconds. An empty inventory is
++     * normal while a headset is unplugged, every endpoint of a disconnected
++     * RDP session is gone, or the default device is being replaced, not an
++     * open error. Check again on the next route poll so hotplug keeps working.
+      */
+-    if (rec && SDL_GetNumAudioDevices(rec) <= 0) {
++    if (SDL_GetNumAudioDevices(rec) <= 0) {
+         *route_matches = false;
+         return 0;
+     }
+@@ -425,13 +427,25 @@ static bool sdl_acquire_out(SDLVoiceOut *sdl)
+     SDL_AudioDeviceID devid;
+     bool present;
+     bool route_matches;
++    bool selection_listed = true;
+ 
+     requested = sdl_route_file_device_name(0, &present);
+     if (!present) {
+         requested = g_strdup(sdl->device_name);
+     }
+-    devid = sdl_open(&sdl->reopen_spec, &obtained, 0, requested,
+-                     &route_matches);
++#ifdef _WIN32
++    if (requested && !sdl_named_device_available(requested, 0)) {
++        /*
++         * WASAPI can wait out its retry window on an endpoint that left the
++         * inventory; open the system default and keep polling for the selection.
++         */
++        warn_report(
++                "Requested SDL playback device is not in the inventory; using system default");
++        selection_listed = false;
++    }
++#endif
++    devid = sdl_open(&sdl->reopen_spec, &obtained, 0,
++                     selection_listed ? requested : NULL, &route_matches);
+     if (!devid) {
+         return false;
+     }
+@@ -446,11 +460,38 @@ static bool sdl_acquire_out(SDLVoiceOut *sdl)
+     sdl->devid = devid;
+     g_free(sdl->device_name);
+     sdl->device_name = g_steal_pointer(&requested);
+-    sdl->route_matches = route_matches;
++    sdl->route_matches = route_matches && selection_listed;
+     sdl->next_route_check = 0;
+     return true;
+ }
+ 
++/* SDL keeps a cached inventory; an attempted WASAPI open of a device that
++ * disappeared blocks for about eight seconds. Leave ten seconds after a failed
++ * open of a listed endpoint, and retry every second while Windows exposes no
++ * playback device at all.
++ */
++static void sdl_backoff_out(SDLVoiceOut *sdl)
++{
++    int seconds = SDL_GetNumAudioDevices(0) > 0 ? 10 : 1;
++
++    sdl->next_route_check = g_get_monotonic_time() + seconds * G_USEC_PER_SEC;
++}
++
++/*
++ * Nothing drains the emulated output ring while SDL has no playback device.
++ * Discard whatever the mixing engine already staged, at the virtual clock
++ * rate, so the ring keeps accepting guest PCM instead of stalling
++ * virtio-sound when a backend write returns space that never appears.
++ */
++static void sdl_silence_out(SDLVoiceOut *sdl)
++{
++    HWVoiceOut *hw = &sdl->hw;
++    size_t bytes = audio_rate_get_bytes(&sdl->silence_rate, &hw->info,
++                                       hw->pending_emul);
++
++    hw->pending_emul -= bytes;
++}
++
+ static void sdl_refresh_route_Out(SDLVoiceOut *sdl)
+ {
+     g_autofree char *requested = NULL;
+@@ -459,12 +500,35 @@ static void sdl_refresh_route_Out(SDLVoiceOut *sdl)
+     bool present;
+     bool route_matches;
+     bool stopped;
++    bool selection_listed = true;
+ 
++    if (sdl->devid &&
++        SDL_GetAudioDeviceStatus(sdl->devid) == SDL_AUDIO_STOPPED) {
++        /*
++         * The Windows endpoint went away (an RDP session disconnected, a
++         * headset was unplugged). Drop it instead of reopening it from the
++         * audio path: opening a missing endpoint blocks the main loop for
++         * about eight seconds and wedges the guest's virtio-sound periods.
++         */
++        sdl_release_out(sdl);
++        sdl->hw.pos_emul = sdl->hw.pending_emul = 0;
++        sdl->next_route_check = 0;
++        audio_rate_start(&sdl->silence_rate);
++    }
+     if (!sdl->devid) {
+-        if (sdl->enabled && sdl_route_check_due(&sdl->next_route_check) &&
+-            sdl_acquire_out(sdl)) {
+-            SDL_PauseAudioDevice(sdl->devid, 0);
++        if (!sdl->enabled) {
++            return;
++        }
++        if (sdl_route_check_due(&sdl->next_route_check)) {
++            if (sdl_acquire_out(sdl)) {
++                /* Discard queued silence before real playback resumes. */
++                sdl->hw.pos_emul = sdl->hw.pending_emul = 0;
++                SDL_PauseAudioDevice(sdl->devid, 0);
++                return;
++            }
++            sdl_backoff_out(sdl);
+         }
++        sdl_silence_out(sdl);
+         return;
+     }
+     if (!sdl_route_check_due(&sdl->next_route_check)) {
+@@ -483,9 +547,22 @@ static void sdl_refresh_route_Out(SDLVoiceOut *sdl)
+          !sdl_named_device_available(requested, 0))) {
+         return;
+     }
+-    replacement = sdl_open(&sdl->reopen_spec, &obtained, 0, requested,
++#ifdef _WIN32
++    if (requested && !sdl_named_device_available(requested, 0)) {
++        /*
++         * WASAPI can wait out its retry window on an endpoint that left the
++         * inventory; open the system default and keep polling for the selection.
++         */
++        warn_report(
++                "Requested SDL playback device is not in the inventory; using system default");
++        selection_listed = false;
++    }
++#endif
++    replacement = sdl_open(&sdl->reopen_spec, &obtained, 0,
++                           selection_listed ? requested : NULL,
+                            &route_matches);
+     if (!replacement) {
++        sdl_backoff_out(sdl);
+         return;
+     }
+     if (!sdl_audio_specs_match(&sdl->reopen_spec, &obtained)) {
+@@ -501,7 +578,7 @@ static void sdl_refresh_route_Out(SDLVoiceOut *sdl)
+     sdl->devid = replacement;
+     g_free(sdl->device_name);
+     sdl->device_name = g_steal_pointer(&requested);
+-    sdl->route_matches = route_matches;
++    sdl->route_matches = route_matches && selection_listed;
+     SDL_PauseAudioDevice(sdl->devid, !sdl->enabled);
+ }
+ 
+@@ -672,8 +749,6 @@ SDL_WRAPPER_FUNC(get_buffer_out, void *, (HWVoiceOut *hw, size_t *size),
+                  (hw, size), Out)
+ SDL_WRAPPER_FUNC(put_buffer_out, size_t,
+                  (HWVoiceOut *hw, void *buf, size_t size), (hw, buf, size), Out)
+-SDL_WRAPPER_FUNC(write, size_t,
+-                 (HWVoiceOut *hw, void *buf, size_t size), (hw, buf, size), Out)
+ SDL_WRAPPER_FUNC(read, size_t, (HWVoiceIn *hw, void *buf, size_t size),
+                  (hw, buf, size), In)
+ SDL_WRAPPER_FUNC(get_buffer_in, void *, (HWVoiceIn *hw, size_t *size),
+@@ -705,6 +780,28 @@ static void sdl_fini_out(HWVoiceOut *hw)
+     sdl->next_route_check = 0;
+ }
+ 
++/*
++ * Direct-write paths call this when the mixing engine is off. While Windows
++ * exposes no playback endpoint, discard the samples at the virtual clock rate
++ * instead of buffering them: nothing drains the emulated ring without a device
++ * and virtio-sound would stall waiting for space. The default mixing-engine
++ * path is paced by sdl_silence_out() instead.
++ */
++static size_t sdl_write(HWVoiceOut *hw, void *buf, size_t size)
++{
++    SDLVoiceOut *sdl = (SDLVoiceOut *)hw;
++    size_t written;
++
++    sdl_refresh_route_Out(sdl);
++    if (!sdl->devid) {
++        return audio_rate_get_bytes(&sdl->silence_rate, &hw->info, size);
++    }
++    SDL_LockAudioDevice(sdl->devid);
++    written = audio_generic_write(hw, buf, size);
++    SDL_UnlockAudioDevice(sdl->devid);
++    return written;
++}
++
+ static int sdl_init_out(HWVoiceOut *hw, struct audsettings *as)
+ {
+     SDLVoiceOut *sdl = (SDLVoiceOut *)hw;
+@@ -763,12 +860,11 @@ static void sdl_enable_out(HWVoiceOut *hw, bool enable)
+     sdl->enabled = enable;
+     if (!enable) {
+         sdl_release_out(sdl);
++        hw->pos_emul = hw->pending_emul = 0;
+         return;
+     }
+-    if (!sdl->devid && !sdl_acquire_out(sdl)) {
+-        return;
+-    }
+-    SDL_PauseAudioDevice(sdl->devid, 0);
++    audio_rate_start(&sdl->silence_rate);
++    sdl_refresh_route_Out(sdl);
+ }
+ 
+ static void sdl_fini_in(HWVoiceIn *hw)

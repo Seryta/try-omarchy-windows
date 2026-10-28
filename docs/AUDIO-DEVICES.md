@@ -68,6 +68,16 @@ permission, idle release, and Windows boot checks. Public `v0.2.0` used r19 and
 startup-only choices. Two physical endpoints per direction and hotplug remain
 untested.
 
+`0025-keep-sdl-playback-running-without-a-windows-device.patch` (next runtime
+candidate) keeps an active guest playback stream alive when Windows exposes no
+playback endpoint, for example while a Remote Desktop session is disconnected or
+the default endpoint is being replaced. QEMU closes the device, discards guest
+PCM at the virtual clock rate instead of blocking in WASAPI for about eight
+seconds, and polls for an endpoint once a second. A selected device that left the
+inventory falls back to the Windows default and is taken again when it returns.
+Omarchy keeps playing silently instead of stalling its virtio-sound periods and
+freezing the desktop until a restart.
+
 ## Sample rates
 
 The launcher reads each effective endpoint's shared-mode mix format from

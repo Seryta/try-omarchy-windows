@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Omarchy keeps running when Windows loses its playback endpoint, for example
+  when a Remote Desktop session disconnects or the selected or default speaker is
+  unplugged. A pending runtime fix keeps virtio-sound periods moving with silence
+  instead of blocking QEMU in WASAPI for eight seconds, which used to freeze the
+  guest desktop until Omarchy restarted.
+
 ## v0.13.0 - 2026-10-25
 
 - With GPU rendering on Intel graphics, opening menus or the Hyprland
