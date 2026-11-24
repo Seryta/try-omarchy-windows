@@ -108,6 +108,7 @@ const (
 	settingsLANPublicID          = 2034
 	settingsLANAddID             = 2035
 	settingsFullscreenDisplayID  = 2036
+	settingsExtraQEMUArgsID      = 2037
 	bsAutoradiobutton            = 0x0009
 	wsGroup                      = 0x00020000
 	settingsRecoveryDone         = 0x8010
@@ -161,6 +162,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 		if errors.Is(err, errSetupCancelled) {
 			return false
 		}
+		errorBox(uiTextWith("settings.error.read_settings", map[string]string{"error": err.Error()}))
+		return false
+	}
+	extraQEMUArgs, err := loadExtraQEMUArgs(dataDir)
+	if err != nil {
 		errorBox(uiTextWith("settings.error.read_settings", map[string]string{"error": err.Error()}))
 		return false
 	}
@@ -296,7 +302,7 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	className, _ := syscall.UTF16PtrFromString("TryOmarchySettings")
 	var hwnd uintptr
 	var scroll settingsScroll
-	var hFull, hFullscreenDisplay, hStartAutomatically, hLaunchAtSignIn, hAltTab, hMem, hCPUs, hDisk, hShare, hShareOn, hFwd, hKey uintptr
+	var hFull, hFullscreenDisplay, hStartAutomatically, hLaunchAtSignIn, hAltTab, hMem, hCPUs, hDisk, hShare, hShareOn, hFwd, hKey, hExtraQEMUArgs uintptr
 	fullscreenMonitors := hostMonitors()
 	fullscreenChoices := []string{""}
 	var hRenderAuto, hRenderGPU, hRenderCPU, hDisplays, hLANPublic uintptr
@@ -580,6 +586,11 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 				}
 				if err == nil {
 					err = saveSettings(path, s)
+				}
+				if err == nil {
+					// Advanced arguments are passed through without validation;
+					// QEMU reports anything wrong at start like any other error.
+					err = saveExtraQEMUArgs(dataDir, text(hExtraQEMUArgs))
 				}
 				if err == nil && diskGiB != storage.DiskGiB {
 					if storageErr := saveStorageSettings(dataDir, diskGiB); storageErr != nil {
@@ -1310,6 +1321,10 @@ func runLauncherSettings(path, dataDir string, portable, launcher bool, beforeRe
 	y = note(uiText("settings.network.linux_updates"), left, y, 450, 36, 42)
 	_, grow = buttons(left, y, 28, 0, rowButton{uiText("settings.network.about"), 210, settingsAboutID})
 	y += 40 + grow
+	section(uiText("settings.section.qemu_args"))
+	grow = fieldLabel(uiText("settings.qemu_args.label"), y, 24)
+	hExtraQEMUArgs = mk("EDIT", extraQEMUArgs, fieldX, y, fieldW, 24, wsBorder|wsTabstop|esAutohscroll, settingsExtraQEMUArgsID)
+	y = note(uiText("settings.qemu_args.help"), left, y+28+grow, clientW-2*left, 44, 52)
 	pages[2] = append(pages[2], scroll.controls...)
 	pageHeights[2] = y
 	scroll.controls = nil

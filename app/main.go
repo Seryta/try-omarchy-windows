@@ -84,6 +84,9 @@ type config struct {
 	recoveryChoice *gpuRecoveryDecision
 	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
 	venus bool
+
+	// extraQEMUArgs is the advanced settings field split into argv entries.
+	extraQEMUArgs []string
 }
 
 // memoryStarved reports whether the current attempt's QEMU died because the
@@ -499,6 +502,11 @@ func main() {
 	if err := applySettings(cfg, userSettings, explicitFlags, &forwards, sshKeyPath); err != nil {
 		fatal(uiTextWith("fatal.settings.use", map[string]string{"error": err.Error()}))
 	}
+	extraQEMUArgs, err := loadExtraQEMUArgs(cfg.dir)
+	if err != nil {
+		fatal(uiTextWith("fatal.settings.read", map[string]string{"error": err.Error()}))
+	}
+	cfg.extraQEMUArgs = splitQEMUArgs(extraQEMUArgs)
 	resourcePrefs, err := loadResourcePreferences(cfg.dir)
 	if err != nil {
 		fatal(uiTextWith("fatal.preferences.resources", map[string]string{"error": err.Error()}))

@@ -164,6 +164,10 @@ func buildQemuArgs(cfg *config, cmdline string) []string {
 	if cfg.fullscreen {
 		args = append(args, "-full-screen")
 	}
+	// Advanced settings arguments come last so they can add devices (for
+	// example a second -drive) without disturbing the launcher's own device
+	// order; the root disk stays vda.
+	args = append(args, cfg.extraQEMUArgs...)
 	return args
 }
 

@@ -61,6 +61,9 @@ type config struct {
 	recoveryChoice *gpuRecoveryDecision
 	// venus offers guest Vulkan on the host GPU in GPU mode (venus.go).
 	venus bool
+
+	// extraQEMUArgs is the advanced settings field split into argv entries.
+	extraQEMUArgs []string
 }
 
 type progressUI struct{}
